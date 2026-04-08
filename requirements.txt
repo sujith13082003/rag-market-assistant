@@ -1,8 +1,10 @@
+streamlit
 langchain
 langchain-community
 langchain-core
 langchain-text-splitters
 faiss-cpu
 sentence-transformers
-transformers
-streamlit
+transformers==4.36.2
+torch
+pandas
