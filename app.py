@@ -3,11 +3,7 @@ import pandas as pd
 import torch
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
-from langchain_community.vectorstores import FAISS
-from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_core.prompts import PromptTemplate
-from langchain_core.documents import Document
-from langchain_text_splitters import CharacterTextSplitter
+from sentence_transformers import SentenceTransformer, util
 
 # ---------------- UI ----------------
 st.set_page_config(page_title="Market Intelligence Assistant")
@@ -21,26 +17,22 @@ def load_data():
 
 df = load_data()
 
-# ---------------- CREATE VECTOR DB ----------------
+# ---------------- LOAD EMBEDDING MODEL ----------------
 @st.cache_resource
-def create_vector_store(df):
-    documents = []
-    for _, row in df.iterrows():
-        content = f"Sentiment: {row['sentiment']}\nNews: {row['text']}"
-        documents.append(Document(page_content=content))
+def load_embedder():
+    return SentenceTransformer("all-MiniLM-L6-v2")
 
-    splitter = CharacterTextSplitter(chunk_size=300, chunk_overlap=50)
-    docs = splitter.split_documents(documents)
+embedder = load_embedder()
 
-    embeddings = HuggingFaceEmbeddings()
-    db = FAISS.from_documents(docs, embeddings)
+# Precompute embeddings
+@st.cache_resource
+def compute_embeddings(texts):
+    return embedder.encode(texts, convert_to_tensor=True)
 
-    return db
+texts = df["text"].tolist()
+embeddings = compute_embeddings(texts)
 
-db = create_vector_store(df)
-retriever = db.as_retriever()
-
-# ---------------- LOAD MODEL (NO PIPELINE) ----------------
+# ---------------- LOAD LLM ----------------
 @st.cache_resource
 def load_model():
     tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
@@ -49,10 +41,20 @@ def load_model():
 
 tokenizer, model = load_model()
 
-# ---------------- PROMPT ----------------
-prompt_template = """You are a financial analyst.
+# ---------------- RAG FUNCTION ----------------
+def rag_chain(question):
+    query_embedding = embedder.encode(question, convert_to_tensor=True)
 
-Answer clearly and concisely based only on the context below.
+    # Similarity search
+    scores = util.cos_sim(query_embedding, embeddings)[0]
+    top_results = torch.topk(scores, k=3)
+
+    context = "\n".join([texts[idx] for idx in top_results.indices])
+
+    prompt = f"""
+You are a financial analyst.
+
+Answer clearly based on the context below.
 
 Context:
 {context}
@@ -63,27 +65,13 @@ Question:
 Answer:
 """
 
-# ---------------- RAG FUNCTION ----------------
-def rag_chain(question):
-    docs = retriever.invoke(question)
-    context = "\n".join([doc.page_content for doc in docs])
-
-    final_prompt = prompt_template.format(
-        context=context,
-        question=question
-    )
-
-    inputs = tokenizer(final_prompt, return_tensors="pt", truncation=True)
+    inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
 
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=150
-        )
+        outputs = model.generate(**inputs, max_new_tokens=150)
 
     response = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-    # Clean output
     if "Answer:" in response:
         response = response.split("Answer:")[-1]
 
