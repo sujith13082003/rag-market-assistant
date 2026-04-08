@@ -35,9 +35,10 @@ retriever = db.as_retriever()
 
 # 🔥 LOAD MODEL (FIXED TASK)
 pipe = pipeline(
-    "text2text-generation",   # ✅ IMPORTANT FIX
+    task="text2text-generation",
     model="google/flan-t5-small",
-    max_length=128
+    max_length=128,
+    trust_remote_code=True
 )
 
 llm = HuggingFacePipeline(pipeline=pipe)
