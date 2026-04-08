@@ -15,9 +15,13 @@ df = load_data()
 
 # Simple search function
 def get_answer(query):
-    query = query.lower()
+    query_words = query.lower().split()
 
-    results = df[df["text"].str.lower().str.contains(query)]
+    df["score"] = df["text"].apply(
+        lambda x: sum(word in x.lower() for word in query_words)
+    )
+
+    results = df[df["score"] > 0].sort_values(by="score", ascending=False)
 
     if results.empty:
         return "No relevant market insights found. Try a different query."
