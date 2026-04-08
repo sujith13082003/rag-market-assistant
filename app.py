@@ -1,18 +1,16 @@
 import streamlit as st
 import pandas as pd
+import torch
 
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
-from langchain_community.llms import HuggingFacePipeline
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.prompts import PromptTemplate
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
 from langchain_text_splitters import CharacterTextSplitter
 
 # ---------------- UI ----------------
-st.set_page_config(page_title="Market Intelligence Assistant", layout="centered")
-
+st.set_page_config(page_title="Market Intelligence Assistant")
 st.title("📊 Market Intelligence Assistant")
 st.write("💡 Ask questions about market trends, industries, or business insights")
 
@@ -23,11 +21,10 @@ def load_data():
 
 df = load_data()
 
-# ---------------- CREATE DOCUMENTS ----------------
+# ---------------- CREATE VECTOR DB ----------------
 @st.cache_resource
 def create_vector_store(df):
     documents = []
-    
     for _, row in df.iterrows():
         content = f"Sentiment: {row['sentiment']}\nNews: {row['text']}"
         documents.append(Document(page_content=content))
@@ -43,26 +40,17 @@ def create_vector_store(df):
 db = create_vector_store(df)
 retriever = db.as_retriever()
 
-# ---------------- LOAD MODEL ----------------
+# ---------------- LOAD MODEL (NO PIPELINE) ----------------
 @st.cache_resource
 def load_model():
     tokenizer = AutoTokenizer.from_pretrained("google/flan-t5-small")
     model = AutoModelForSeq2SeqLM.from_pretrained("google/flan-t5-small")
+    return tokenizer, model
 
-    pipe = pipeline(
-        "text2text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        max_length=128
-    )
-
-    return HuggingFacePipeline(pipeline=pipe)
-
-llm = load_model()
+tokenizer, model = load_model()
 
 # ---------------- PROMPT ----------------
-prompt = PromptTemplate.from_template(
-    """You are a financial analyst.
+prompt_template = """You are a financial analyst.
 
 Answer clearly and concisely based only on the context below.
 
@@ -72,21 +60,28 @@ Context:
 Question:
 {question}
 
-Answer:"""
-)
+Answer:
+"""
 
 # ---------------- RAG FUNCTION ----------------
 def rag_chain(question):
     docs = retriever.invoke(question)
-
     context = "\n".join([doc.page_content for doc in docs])
 
-    chain = prompt | llm | StrOutputParser()
+    final_prompt = prompt_template.format(
+        context=context,
+        question=question
+    )
 
-    response = chain.invoke({
-        "context": context,
-        "question": question
-    })
+    inputs = tokenizer(final_prompt, return_tensors="pt", truncation=True)
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=150
+        )
+
+    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
     # Clean output
     if "Answer:" in response:
@@ -94,7 +89,7 @@ def rag_chain(question):
 
     return response.strip()
 
-# ---------------- INPUT UI ----------------
+# ---------------- INPUT ----------------
 query = st.text_input("🔍 Enter your question:")
 
 # ---------------- OUTPUT ----------------
